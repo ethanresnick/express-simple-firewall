@@ -1,3 +1,9 @@
+/** 
+ * @todo explicitly test support for user.hasRole() returning a promise.
+ * (Right now, it's only tested by the fact that a couple of the spies happen
+ * to return one.)
+ */
+
 var firewall = require('../index')
   , expect = require('chai').expect
   , express = require('express')
@@ -14,8 +20,8 @@ var routes = [
 
 var dummyUsers = [
   {hasRole: sinon.spy(function() { return false; }), isApproved: false},
-  {hasRole: sinon.spy(function(role) { return false }), isApproved: true},
-  {hasRole: sinon.spy(function(role) { return role === "MEMBER"; }), isApproved: false},
+  {hasRole: sinon.spy(function(role) { return Q.fcall(function() { return false }); }), isApproved: true},
+  {hasRole: sinon.spy(function(role) { return Q.fcall(function() { return role === "MEMBER"; }); }), isApproved: false},
   {hasRole: sinon.spy(function(role) { return role === "MEMBER"; }), isApproved: true}
 ];
 
