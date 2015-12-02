@@ -13,7 +13,7 @@ var firewall = require('../index')
 
 var routes = [
   {path:"/members", access: "MEMBER"},
-  {path:"/public", access: "PUBLIC", method: "post"},
+  {path:"/public", access: "PUBLIC", method: "POST"},
   {path:"/unspecifiedPolicy"},
   {path: "/user", access: "AUTHENTICATED"}
 ];
