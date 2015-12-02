@@ -19,10 +19,10 @@ var routes = [
 ];
 
 var dummyUsers = [
-  {hasRole: sinon.spy(function() { return false; }), isApproved: false},
-  {hasRole: sinon.spy(function(role) { return Q.fcall(function() { return false }); }), isApproved: true},
-  {hasRole: sinon.spy(function(role) { return Q.fcall(function() { return role === "MEMBER"; }); }), isApproved: false},
-  {hasRole: sinon.spy(function(role) { return role === "MEMBER"; }), isApproved: true}
+  {hasRole: sinon.spy(function() { return false; })},
+  {hasRole: sinon.spy(function(role) { return Q.fcall(function() { return false }); })},
+  {hasRole: sinon.spy(function(role) { return Q.fcall(function() { return role === "MEMBER"; }); })},
+  {hasRole: sinon.spy(function(role) { return role === "MEMBER"; })}
 ];
 
 //req.user is set directly on these, rather than it being set
@@ -213,7 +213,7 @@ describe("the firewall itself", function() {
   });
 
   describe("authenticating the user", function() {
-    it("should check both that user.isApproved and user.hasRole(role) are true", function(done) {
+    it("should check user.hasRole(role) is true", function(done) {
       promiseSequenceAndDone([
         testUserAuthPromise(requests.memberAuthorizedAccess, true),
         testUserAuthPromise(requests.memberAccessNoRole, false),
