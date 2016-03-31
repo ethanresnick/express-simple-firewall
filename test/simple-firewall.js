@@ -1,104 +1,72 @@
-/** 
- * @todo explicitly test support for user.hasRole() returning a promise.
- * (Right now, it's only tested by the fact that a couple of the spies happen
- * to return one.)
- */
-
-var firewall = require('../index')
-  , expect = require('chai').expect
-  , express = require('express')
-  , sinon = require('sinon')
-  , emitter = new (require('events').EventEmitter)
-  , Q = require("Q");
+var firewall = require('../index');
+var expect = require('chai').expect;
+var express = require('express');
+var sinon = require('sinon');
+var emitter = new (require('events').EventEmitter);
+var Q = require("Q");
 
 var routes = [
-  {path:"/members", access: "MEMBER"},
+  {path:"/members", access: ["MEMBER", "ADMIN"] },
   {path:"/public", access: "PUBLIC", method: "POST"},
   {path:"/unspecifiedPolicy"},
-  {path: "/user", access: "AUTHENTICATED"}
+  {path: "/profile", access: "AUTHENTICATED"},
+  {path:"/admin", access: "ADMIN" }
 ];
 
-var dummyUsers = [
-  {hasRole: sinon.spy(function() { return false; })},
-  {hasRole: sinon.spy(function(role) { return Q.fcall(function() { return false }); })},
-  {hasRole: sinon.spy(function(role) { return Q.fcall(function() { return role === "MEMBER"; }); })},
-  {hasRole: sinon.spy(function(role) { return role === "MEMBER"; })}
-];
-
-//req.user is set directly on these, rather than it being set
-//through the adapter, b/c the adapters have their own unit tests.
-var requests = {
-  sessionUser0: {
-    url: "/members", 
-    method: "get", 
-    user: dummyUsers[0]
+// Note: two of these fake users return a promise from their hasRole,
+// so that we can test that the code works whether hasRole is sync or not.
+var users = {
+  noRole: {
+    hasRole: sinon.spy(function() { return Q(false); })
   },
-  unspecifiedPolicyUser1: {
-    url: "/unspecifiedPolicy", 
-    method: "get", 
-    user: dummyUsers[1]
-  },  
-  unspecifiedPolicyNoUser: {
-    url: "/unspecifiedPolicy", 
-    method: "get"
+  member: {
+    hasRole: sinon.spy(function(roleOrRoles) { 
+      return roleOrRoles === "MEMBER" || roleOrRoles.indexOf("MEMBER") > -1; 
+    })
   },
-  publicNoUser: {
-    url: '/public',
-    method: 'post'
-  },
-  publicWithUser: {
-    url: '/public',
-    method: 'post',
-    user: dummyUsers[0]
-  },
-  memberNoUser: {
-    url: '/members',
-    method: "get"
-  },
-  memberAuthorizedAccess: {
-    url: "/members", 
-    method: "get", 
-    user: dummyUsers[3]
-  },
-  memberAccessNoRole: {
-    url: "/members", 
-    method: "get", 
-    user: dummyUsers[1]
-  },
-  memberAccessUnapprovedUser: {
-    url: "/members", 
-    method: "get", 
-    user: dummyUsers[2]
-  },
-  requiresUser: {
-    url: "/user",
-    method: "get",
-    user: dummyUsers[3]
-  },
-  requiresUserNoUser: {
-    url: "/user",
-    method: "get",
-    user: dummyUsers[3]
-  },
-  requiresUserUnapprovedUser: {
-    url: "/user",
-    method: "get",
-    user: dummyUsers[0]
+  admin: {
+    hasRole: sinon.spy(function(roleOrRoles) { 
+      return Q(roleOrRoles === "ADMIN" || roleOrRoles.indexOf("ADMIN") > -1); 
+    })
   }
 };
 
-var resSpy = {'status': sinon.spy(function(res, req, next) { })}
-  , firewallAdapter = sinon.spy(function(req, res, next){ next(); })
-  , routeHandler = sinon.spy(function(req, res, next) { emitter.emit('done'); })
-  , unauthenticatedHandler = sinon.spy(function(req, res) { emitter.emit('done'); })
-  , unauthorizedHandler = sinon.spy(function(req, res) { emitter.emit('done'); });
+// Set up an adapter that does nothing; we'll populate req.user in our 
+// fake requests manually, so that we can unit test our adapters separately.
+var firewallAdapter = sinon.spy(function(req, res, next){ next(); });
 
+// Set up handlers for 200, 401, and 403. These emit an event when called 
+// because the express router doesn't let us register a callback for when the 
+// last middleware is done. So, instead, we listen for these events.
+// Note: the Router will let you provide a callback that's run if next() is 
+// called from the last middleware, but our unauthenticated and unauthorized 
+// handlers are intentionally called without next as an argument (to make sure 
+// the user doesn't accidentally let the request through the firewall), so we 
+// can't take advantage of that.
+var successHandler = sinon.spy(function(req, res, next) { emitter.emit('done'); });
+var unauthenticatedHandler = sinon.spy(function(req, res) { emitter.emit('done'); });
+var unauthorizedHandler = sinon.spy(function(req, res) { emitter.emit('done'); });
+
+// Set up the firewall itself, and use it on a router.
 var firewallRouter = firewall(routes, firewallAdapter, unauthenticatedHandler, unauthorizedHandler);
 var mainRouter = express.Router();
 mainRouter.use(firewallRouter);
-mainRouter.use(routeHandler);
+mainRouter.use(successHandler);
 
-describe("the module", function() {
+// When we exercise the mainRouter below, we'll pass in fake request and 
+// response objects. Our fake response object is defined below. It creates
+// a spy for its status function, so we can know that the firewall called
+// res.status().
+var resSpy = {'status': sinon.spy(function(res, req, next) { })}
+
+// Resolve a sequence of promises in series.
+function promiseSequenceAndDone(promises, done) {
+  return promises.slice(1).reduce(function(soFar, promise) {
+    return soFar.then(promise, done);
+  }, promises[0]).then(function() { done() }, done);
+}
+
+describe("the module's interface", function() {
   it("should export a function with arity of four", function() {
     expect(firewall).to.be.a("function").with.length(4);
   });
@@ -109,29 +77,28 @@ describe("the module", function() {
 });
 
 describe("the firewall itself", function() {
-  //can't use beforeEach b/c some tests include multiple
-  //requests, in between each of which we need to call this.
-  function reset() {
-    resSpy.status.reset();
-    unauthenticatedHandler.reset();
-    unauthorizedHandler.reset();
-    routeHandler.reset();
-    firewallAdapter.reset();
-  }
-
-  //The express router doesn't let us register a callback to run when the last middleware is done.
-  //So, instead, we have our final handlers trigger events, which we listen to in the fns below.
-  //Note: the Router will let you provide a callback that's run if next() is called from the 
-  //last middleware (https://github.com/visionmedia/express/blob/master/lib/router/index.js#L115), 
-  //but some of our final functions (i.e. the unauthenticated/unauthorizedHandlers) are inten-
-  //tionally called without next as an argument, to make sure the user doesn't accidentally let
-  //the request through the firewall. Hence our EventEmitter test pattern.
+  /**
+   * Asynchronously establishes expects() for the appropriate handler,
+   * given the status you're expecting. And tests that res.status() was
+   * called for all statuses but 200. Then returns a promise that rejects
+   * if any expectations fail; resolves otherwise.
+   */
   function expectStatusPromise(req, status, additionalExpectations) {
     return Q.promise(function(resolve, reject) {
-      reset();
+      // Reset all counters before kicking off the request. 
+      // We can't put this in a beforeEach b/c some tests include multiple
+      // requests, in between each of which we need to do this resetting.
+      // Note: this is global state, so no paralellizing tests :(.
+      // That's why we use promiseSequenceAndDone.
+      resSpy.status.reset();
+      unauthenticatedHandler.reset();
+      unauthorizedHandler.reset();
+      successHandler.reset();
+      firewallAdapter.reset();
+
       emitter.once('done', function() {
         try {
-          expect(routeHandler.callCount).to.equal(status === 200 ? 1 : 0);
+          expect(successHandler.callCount).to.equal(status === 200 ? 1 : 0);
           expect(unauthenticatedHandler.callCount).to.equal(status === 401 ? 1 : 0);
           expect(unauthorizedHandler.callCount).to.equal(status === 403 ? 1 : 0);
 
@@ -149,83 +116,118 @@ describe("the firewall itself", function() {
           reject(e);
         }
       });
+
       //dispatch the request
       mainRouter(req, resSpy);
     });
   };
 
-  function testUserAuthPromise(req, shouldWork) {
-    return Q.promise(function(resolve, reject) {
-      reset();
-      emitter.once('done', function() {
-        try {
-          expect(routeHandler.callCount).to.equal(shouldWork ? 1 : 0);
-          expect(req.user.hasRole.callCount).to.equal(1);
-          expect(req.user.hasRole.calledWith("MEMBER")).to.be.true;
-          resolve();
-        }
-        catch(e) {
-          reject(e);
-        }
-      })
-      mainRouter(req, resSpy);
-    });
-  };
-
-  function promiseSequenceAndDone(promises, done) {
-    return promises.slice(1).reduce(function(soFar, promise) {
-      return soFar.then(promise);
-    }, promises[0]).then(done, done);
-  }
-
   it("should call the user adapter before anything else", function(done) {
-    expectStatusPromise(requests.publicNoUser, 200, function() {
-      expect(firewallAdapter.calledBefore(routeHandler));
+    var dummySuccessfulReq = {url: '/public', method: 'post'};
+
+    expectStatusPromise(dummySuccessfulReq, 200, function() {
+      expect(firewallAdapter.calledBefore(successHandler));
     }).then(done);
-  })
-
-  it("should let anyone access public urls", function(done) {
-    expectStatusPromise(requests.publicNoUser, 200).then(done);
   });
 
-  it("should let any user access public urls", function(done) {
-    expectStatusPromise(requests.publicWithUser, 200).then(done);
+  describe("public routes", function() {
+    var publicRequests = [
+      {url: '/public', method: 'post'},
+      {url: '/public', method: 'post', user: users.noRole},
+      {url: '/public', method: 'post', user: users.member}
+    ];
+
+    it("should be accessible to anyone", function(done) {
+      promiseSequenceAndDone(publicRequests.map(function(publicReq) {
+        return expectStatusPromise(publicReq, 200);
+      }), done);
+    });
   });
 
-  it("should make routes with no explicit access policy inaccessible with a 401 if no user", function(done) {
-    expectStatusPromise(requests.unspecifiedPolicyNoUser, 401).then(done);
-  });
+  describe("routes with no explicit access policy", function() {
+    var unspecifiedPolicyRequests = [
+      {url: '/unspecifiedPolicy', method: 'get'},
+      {url: '/unspecifiedPolicy', method: 'get', user: users.noRole},
+      {url: '/unspecifiedPolicy', method: 'get', user: users.admin}
+    ];
 
-  it("should make secure routes inaccessible with a 401 if no user", function(done) {
-      expectStatusPromise(requests.memberNoUser, 401).then(done);
-  });
+    it("should be inaccessible with a 401 if no user", function(done) {
+      expectStatusPromise(unspecifiedPolicyRequests[0], 401).then(function() { 
+        done(); 
+      }, done);
+    });
 
-  it("should allow any user to access routes with an AUTHENTICATED policy", function(done) {
+    it("should be inaccessible with a 403 if a user", function(done) {
       promiseSequenceAndDone([
-        expectStatusPromise(requests.requiresUser, 200),
-        expectStatusPromise(requests.requiresUserNoUser, 401),
-        expectStatusPromise(requests.requiresUserUnapprovedUser, 200)
-      ], done);
-  });
-
-  it("should make routes with no explicit access policy inaccessible with a 403 if a user", function(done) {
-    expectStatusPromise(requests.unspecifiedPolicyUser1, 403).then(done);
-  });
-
-  describe("authenticating the user", function() {
-    it("should check user.hasRole(role) is true", function(done) {
-      promiseSequenceAndDone([
-        testUserAuthPromise(requests.memberAuthorizedAccess, true),
-        testUserAuthPromise(requests.memberAccessNoRole, false),
-        testUserAuthPromise(requests.memberAccessUnapprovedUser, false)
+        expectStatusPromise(unspecifiedPolicyRequests[1], 403),
+        expectStatusPromise(unspecifiedPolicyRequests[2], 403)
       ], done);
     });
   });
 
-  it("should 403 if req.user exists but doesn't have access", function(done) {
-    promiseSequenceAndDone([
-      expectStatusPromise(requests.sessionUser0, 403),
-      expectStatusPromise(requests.memberAccessUnapprovedUser, 403)
-    ], done);
+  describe("routes requiring specific roles", function() {
+    it("should return 200, 401, or 403 as appropriate", function(done) {
+      var reqs = [{
+        url: '/members',
+        method: "get",
+        expectedStatus: 401
+      }, {
+        url: "/members", 
+        method: "get", 
+        user: users.noRole,
+        expectedStatus: 403
+      }, {
+        url: "/members", 
+        method: "get", 
+        user: users.member,
+        expectedStatus: 200
+      }, {
+        url: "/members", 
+        method: "get", 
+        user: users.admin,
+        expectedStatus: 200
+      }, {
+        url: '/admin',
+        method: "get",
+        expectedStatus: 401
+      }, {
+        url: "/admin", 
+        method: "get", 
+        user: users.noRole,
+        expectedStatus: 403
+      }, {
+        url: "/admin", 
+        method: "get", 
+        user: users.member,
+        expectedStatus: 403
+      }, {
+        url: "/admin", 
+        method: "get", 
+        user: users.admin,
+        expectedStatus: 200
+      }];
+
+      Q.all(reqs.map(function(req) {
+        var expectedStatus = req.expectedStatus;
+        delete req.expectedStatus;
+
+        // Expect the status to match and hasRole to have beeen called.
+        return expectStatusPromise(req, expectedStatus, function() {
+          if(req.user) {
+            expect(req.user.hasRole.callCount).to.equal(1);
+          }
+        });
+      })).then(function() { done(); }, done);
+    });
+  });
+
+  describe("routes only requiring an authenticated user", function() {
+    it("should be accessible iff there's a user", function(done) {
+      Q.all([
+        expectStatusPromise({ url: "/profile", method: "get" }, 401),
+        expectStatusPromise({ url: "/profile", method: "get", user: users.noRole }, 200),
+        expectStatusPromise({ url: "/profile", method: "get", user: users.admin }, 200)
+      ]).then(function() { done(); }, done);      
+    })
   });
 });
