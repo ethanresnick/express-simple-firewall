@@ -1,7 +1,7 @@
 {
   "name": "express-simple-firewall",
   "description": "Allows you to protect routes from being accessed unless the current user has a certain role.",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "homepage": "https://github.com/ethanresnick/express-simple-firewall",
   "repository": {
     "type": "git",
